@@ -9,12 +9,17 @@ interface GameState {
     computerScore: number;
 }
 
+declare function initializeCppEngine(): void;
+declare function updateCppEngine(state: GameState): void;
+declare function cleanupCppEngine(): void;
+
 class PingPongGame {
     private canvas: HTMLCanvasElement;
     private ctx: CanvasRenderingContext2D;
     private playerScoreElement: HTMLElement;
     private computerScoreElement: HTMLElement;
     private state: GameState;
+    private luaVM: any; // LuaVM type would be defined by the Lua WebAssembly module
 
     private readonly paddleWidth: number = 10;
     private readonly paddleHeight: number = 80;
@@ -41,7 +46,18 @@ class PingPongGame {
         };
 
         this.canvas.addEventListener('mousemove', this.movePlayer.bind(this));
+        
+        this.initializeLua();
+        initializeCppEngine();
+        
         this.gameLoop();
+    }
+
+    private async initializeLua() {
+        const response = await fetch('game_events.lua');
+        const luaScript = await response.text();
+        this.luaVM = await import('lua-wasm'); // Assume we're using a Lua WebAssembly module
+        this.luaVM.doString(luaScript);
     }
 
     private drawRect(x: number, y: number, width: number, height: number, color: string): void {
@@ -75,6 +91,13 @@ class PingPongGame {
         } else if (computerCenter > this.state.ballY + 35) {
             this.state.computerY -= 6;
         }
+
+        if (this.state.computerY < 0) {
+            this.state.computerY = 0;
+        }
+        if (this.state.computerY > this.canvas.height - this.paddleHeight) {
+            this.state.computerY = this.canvas.height - this.paddleHeight;
+        }
     }
 
     private updateBall(): void {
@@ -83,6 +106,7 @@ class PingPongGame {
 
         if (this.state.ballY < 0 || this.state.ballY > this.canvas.height) {
             this.state.ballSpeedY = -this.state.ballSpeedY;
+            this.luaVM.call('onWallHit', this.state.ballY < 0 ? 'top' : 'bottom');
         }
 
         if (this.state.ballX < this.paddleWidth) {
@@ -90,9 +114,11 @@ class PingPongGame {
                 this.state.ballSpeedX = -this.state.ballSpeedX;
                 const deltaY = this.state.ballY - (this.state.playerY + this.paddleHeight / 2);
                 this.state.ballSpeedY = deltaY * 0.35;
+                this.luaVM.call('onPaddleHit', 'player');
             } else {
                 this.state.computerScore++;
                 this.resetBall();
+                this.luaVM.call('onScore', 'computer');
             }
         }
 
@@ -101,9 +127,11 @@ class PingPongGame {
                 this.state.ballSpeedX = -this.state.ballSpeedX;
                 const deltaY = this.state.ballY - (this.state.computerY + this.paddleHeight / 2);
                 this.state.ballSpeedY = deltaY * 0.35;
+                this.luaVM.call('onPaddleHit', 'computer');
             } else {
                 this.state.playerScore++;
                 this.resetBall();
+                this.luaVM.call('onScore', 'player');
             }
         }
     }
@@ -128,9 +156,18 @@ class PingPongGame {
     private gameLoop(): void {
         this.moveComputer();
         this.updateBall();
+        updateCppEngine(this.state);
         this.draw();
         requestAnimationFrame(this.gameLoop.bind(this));
     }
+
+    public cleanup(): void {
+        cleanupCppEngine();
+    }
 }
 
-new PingPongGame();
+const game = new PingPongGame();
+
+window.addEventListener('beforeunload', () => {
+    game.cleanup();
+});
